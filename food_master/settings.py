@@ -80,11 +80,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'the_food_mas2', # 改为自己的数据库名称
-        'USER': 'root',
-        'PASSWORD': 'Buaa362880!', # 改为自己的密码
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'NAME': os.environ.get('FOOD_DELIVER_DB_NAME', 'the_food_mas2'),
+        'USER': os.environ.get('FOOD_DELIVER_DB_USER', 'root'),
+        'PASSWORD': os.environ.get('FOOD_DELIVER_DB_PASSWORD', 'Buaa362880!'),
+        'HOST': os.environ.get('FOOD_DELIVER_DB_HOST', 'localhost'),
+        'PORT': os.environ.get('FOOD_DELIVER_DB_PORT', '3306'),
     }
 }
 

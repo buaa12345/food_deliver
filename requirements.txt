@@ -1,3 +1,5 @@
 Django==3.2.11
+legacy-cgi==2.6.3
 mysqlclient==2.1.1
+PyMySQL==1.1.1
 requests==2.28.2
