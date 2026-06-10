@@ -1,5 +1,7 @@
 # 功能介绍
 
+以下是本组软件工程大作业项目的本地运行测试版, 该项目已经提交到Railway, 可公网访问。具体可见：https://github.com/Amen-ai36/softwork-project#
+
 ## 首先项目运行方式
 1. 安装依赖：
 pip install -r requirements.txt
