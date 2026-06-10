@@ -59,9 +59,6 @@ def delete_cart_item(request, tempid):
         except Exception as e:
             return JsonResponse({'status': 'error', 'msg': str(e)}, status=400)
     return JsonResponse({'status': 'error', 'msg': '仅支持POST'}, status=405)
-from django.views.decorators.http import require_POST
-from django.utils import timezone
-
 @require_POST
 def clear_cart(request):
     """清空购物车：将当前用户所有购物车记录迁移到 CartHistory，然后删除"""
@@ -78,6 +75,11 @@ def clear_cart(request):
     cart_items = Temp.objects.filter(user=user, pos=0)
     if not cart_items.exists():
         return JsonResponse({'status': 'ok', 'msg': '购物车已是空的'})
+
+    unavailable = cart_items.filter(Q(food__is_off_shelf=True) | Q(food__is_sold_out=True)).select_related('food')
+    if unavailable.exists():
+        names = '、'.join(item.food.name for item in unavailable)
+        return JsonResponse({'status': 'error', 'msg': f'{names} 已下架或售罄，请先从购物车删除'}, status=400)
 
     # 批量创建历史记录
     for item in cart_items:
@@ -100,7 +102,7 @@ def get_global_info():
     global_info = cache.get(CACHE_KEY_GLOBAL_INFO)
     if global_info is None:
         # 生成全局信息字符串（这部分只在缓存过期时执行一次）
-        foods = Food.objects.all()
+        foods = Food.objects.filter(is_off_shelf=False, is_sold_out=False)
         foods_info = "【以下是当前平台菜品清单】\n"
         for idx, food in enumerate(foods, 1):
             foods_info += f"{idx}. {food.name} | 价格: ¥{food.price} | 简介: {food.inf}\n"
@@ -126,6 +128,7 @@ def get_global_info():
         cache.set(CACHE_KEY_GLOBAL_INFO, global_info, CACHE_TIMEOUT)
     return global_info
 
+@ensure_csrf_cookie
 def ai_chat_view(request):
     if request.method == "POST":
         user_id = request.session.get('user_id')
@@ -276,6 +279,7 @@ def register(request):
     # GET 请求：显示注册页面
     return render(request, 'register.html')
 
+@ensure_csrf_cookie
 def food(request):
     user_id = request.session.get('user_id')
     if not user_id:
@@ -283,13 +287,13 @@ def food(request):
     
     user = User.objects.filter(id=user_id).first()
     keyword = request.GET.get('q', '').strip()
-    foods = Food.objects.all()
+    foods = Food.objects.filter(is_off_shelf=False)
 
     if keyword:
         foods = foods.filter(
             Q(name__icontains=keyword) | Q(providor__icontains=keyword) | Q(inf__icontains=keyword)
         )
-    foods_json = list(foods.values('id', 'name', 'price', 'providor', 'sale', 'rating', 'ratenum'))
+    foods_json = list(foods.values('id', 'name', 'price', 'providor', 'sale', 'rating', 'ratenum', 'is_sold_out'))
     return render(request, 'food/food.html', {
         'foods': foods,
         'foods_json': foods_json,
@@ -359,6 +363,29 @@ def foodsend(request):
 
     return render(request, 'food/foodsend.html', {'user_id': user.id})
 
+@require_POST
+def merchant_food_action(request):
+    user = get_login_user(request)
+    if not user:
+        return redirect('/index/')
+    if not is_merchant(user):
+        return HttpResponse("只有商家可以管理商品状态！")
+
+    food = Food.objects.filter(id=request.POST.get('food_id'), merchant=user).first()
+    if not food:
+        return HttpResponse("商品不存在或不属于当前商家！")
+
+    action = request.POST.get('action')
+    if action == 'toggle_off_shelf':
+        food.is_off_shelf = not food.is_off_shelf
+        food.save(update_fields=['is_off_shelf'])
+    elif action == 'toggle_sold_out':
+        food.is_sold_out = not food.is_sold_out
+        food.save(update_fields=['is_sold_out'])
+    else:
+        return HttpResponse("不支持的商品操作！")
+    return redirect('/space/')
+
 def space(request):
     user_id = request.session.get('user_id')
     if not user_id:
@@ -422,6 +449,23 @@ def space(request):
         context['merchant_group_coupons'] = GroupBuyCoupon.objects.filter(
             food__merchant=user
         ).select_related('food', 'user').order_by('-time')
+        food_revenue = Order.objects.filter(food__merchant=user).aggregate(total=Sum('cost'))['total'] or 0
+        hotel_revenue = HotelOrder.objects.filter(hotel__merchant=user).aggregate(total=Sum('cost'))['total'] or 0
+        play_revenue = PlayOrder.objects.filter(play__merchant=user).aggregate(total=Sum('cost'))['total'] or 0
+        groupbuy_revenue = GroupBuyCoupon.objects.filter(
+            food__merchant=user, status=1
+        ).aggregate(total=Sum('cost'))['total'] or 0
+        context['merchant_revenue'] = {
+            'food': food_revenue,
+            'hotel': hotel_revenue,
+            'play': play_revenue,
+            'groupbuy': groupbuy_revenue,
+            'total': food_revenue + hotel_revenue + play_revenue + groupbuy_revenue,
+            'food_orders': Order.objects.filter(food__merchant=user).count(),
+            'hotel_orders': HotelOrder.objects.filter(hotel__merchant=user).count(),
+            'play_orders': PlayOrder.objects.filter(play__merchant=user).count(),
+            'used_group_coupons': GroupBuyCoupon.objects.filter(food__merchant=user, status=1).count(),
+        }
     else:
         context['orders'] = Order.objects.filter(user=user)
         context['hotel_orders'] = HotelOrder.objects.filter(user=user)
@@ -447,6 +491,8 @@ def fooddetails(request):
     food = Food.objects.filter(id=food_id).first()
     if not food:
         return HttpResponse("食物不存在！")
+    if food.is_off_shelf:
+        return HttpResponse("该商品已下架！")
         
     # 查询当前用户在此食物上的订单记录
     orders = Order.objects.filter(user_id=user_id, food_id=food_id)
@@ -474,6 +520,14 @@ def foodorder(request):
     if not food_id:
         return HttpResponse("参数错误！")
         
+    food = Food.objects.filter(id=food_id).first()
+    if not food:
+        return HttpResponse("食物不存在！")
+    if food.is_off_shelf:
+        return HttpResponse("该商品已下架！")
+    if food.is_sold_out:
+        return HttpResponse("该商品已售罄！")
+
     if request.method == 'POST':
         num = request.POST.get('num')
         address = request.POST.get('address')
@@ -488,7 +542,7 @@ def foodorder(request):
                 food_id=food_id,
                 num=num,
                 address=address,
-                cost=Food.objects.get(id=food_id).price * int(num),
+                cost=food.price * int(num),
                 pos=0
             )
 
@@ -498,13 +552,12 @@ def foodorder(request):
                 food_id=food_id,
                 num=num,
                 address=address,
-                cost=Food.objects.get(id=food_id).price, # 这里是单价所以不要乘以数量!!!!
+                cost=food.price, # 这里是单价所以不要乘以数量!!!!
                 pos=0
             )
 
         return redirect(f'/fooddetails/?userid={user_id}&foodid={food_id}')
         
-    food = Food.objects.get(id=food_id)
     return render(request, 'food/foodorder.html', {'food': food, 'user_id': user_id})
 
 def groupbuyorder(request):
@@ -519,6 +572,10 @@ def groupbuyorder(request):
     food = Food.objects.filter(id=food_id).first()
     if not food:
         return HttpResponse("食物不存在！")
+    if food.is_off_shelf:
+        return HttpResponse("该商品已下架！")
+    if food.is_sold_out:
+        return HttpResponse("该商品已售罄！")
 
     if request.method == 'POST':
         num = request.POST.get('num')
@@ -626,6 +683,7 @@ def ordercomment(request):
         
     return render(request, 'foodorder/ordercomment.html', {'orders': order})
 
+@ensure_csrf_cookie
 def blog(request):
     user_id = request.session.get('user_id')
     if not user_id:

@@ -12,14 +12,15 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(Food)
 class FoodAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'price', 'providor', 'merchant', 'rating', 'sale')
+    list_display = ('id', 'name', 'price', 'providor', 'merchant', 'rating', 'sale', 'is_off_shelf', 'is_sold_out')
+    list_filter = ('is_off_shelf', 'is_sold_out')
     search_fields = ('name', 'providor')
 
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'food', 'rider', 'num', 'cost', 'pos', 'time')
-    list_filter = ('pos',)
+    list_display = ('id', 'user', 'food', 'rider', 'num', 'cost', 'pos', 'scoretofood', 'scoretodeliver', 'is_abnormal', 'time')
+    list_filter = ('pos', 'is_abnormal')
     search_fields = ('user__username', 'food__name', 'address')
 
 
